@@ -23,7 +23,7 @@ data:
   valid: wikitext103
   cache_dir: data
 
-graph:
+graph: #change this to change graph type
   type: uniform
   file: data
   report_all: False
