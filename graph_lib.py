@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import custom_fwd, custom_bwd
 
+#hu's a bum
 
 from catsample import sample_categorical
 
