@@ -88,7 +88,7 @@ def _run(rank, world_size, cfg):
     
     # build score model
     score_model = SEDD(cfg).to(device)
-    score_model = DDP(score_model, device_ids=[rank], static_graph=True, find_unused_parameters=True)
+    #score_model = DDP(score_model, device_ids=[rank], static_graph=True, find_unused_parameters=True) Z:Commented this out
 
     num_parameters = sum(p.numel() for p in score_model.parameters())
     mprint(f"Number of parameters in the model: {num_parameters}")
@@ -100,7 +100,7 @@ def _run(rank, world_size, cfg):
 
     # build noise
     noise = noise_lib.get_noise(cfg).to(device)
-    noise = DDP(noise, device_ids=[rank], static_graph=True)
+    #noise = DDP(noise, device_ids=[rank], static_graph=True) Z:Commented this out
     sampling_eps = 1e-5
 
 
@@ -121,9 +121,9 @@ def _run(rank, world_size, cfg):
     tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
 
     # Build data iterators
-    train_ds, eval_ds = data.get_dataloaders(cfg)
-
-    # mprint(f"Length of datasets: {len(train_ds)}, {len(eval_ds)}")
+    print('Getting Data Loaders')
+    train_ds, eval_ds = data.get_dataloaders(cfg,distributed=False)
+    mprint(f"Length of datasets: {len(train_ds)}, {len(eval_ds)}")
 
     train_iter = iter(train_ds)
     eval_iter = iter(eval_ds)
@@ -155,8 +155,8 @@ def _run(rank, world_size, cfg):
         # flag to see if there was movement ie a full batch got computed
         if step != state['step']:
             if step % cfg.training.log_freq == 0:
-                dist.all_reduce(loss)
-                loss /= world_size
+                #dist.all_reduce(loss)
+                #loss /= world_size
 
                 mprint("step: %d, training_loss: %.5e" % (step, loss.item()))
             
@@ -169,9 +169,8 @@ def _run(rank, world_size, cfg):
                 else:
                     eval_batch = next(train_iter).to(device)
                 eval_loss = eval_step_fn(state, eval_batch)
-
-                dist.all_reduce(eval_loss)
-                eval_loss /= world_size
+                #dist.all_reduce(eval_loss)
+                #eval_loss /= world_size
 
                 mprint("step: %d, evaluation_loss: %.5e" % (step, eval_loss.item()))
 
@@ -214,10 +213,10 @@ def _run(rank, world_size, cfg):
                                 perplexity = F.cross_entropy(logits[..., :-1], s[..., 1:], reduction="none").mean(dim=-1).exp().mean()
                                 total_perplexity += perplexity
                             total_perplexity /= batches
-                            dist.all_reduce(total_perplexity)
-                            total_perplexity /= world_size
+                            #dist.all_reduce(total_perplexity)
+                            #total_perplexity /= world_size
                             mprint(f"Generative Perplexity at step: {step}. Perplexity: {total_perplexity:.3f}.")
 
                             del eval_model, logits, loss
 
-                    dist.barrier()
+                    #dist.barrier()

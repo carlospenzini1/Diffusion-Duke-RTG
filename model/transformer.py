@@ -5,7 +5,7 @@ import numpy as np
 import math
 
 from einops import rearrange
-from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
+#from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
 # from flash_attn.ops.fused_dense import FusedMLP, FusedDense
 from huggingface_hub import PyTorchModelHubMixin
 from omegaconf import OmegaConf
@@ -17,6 +17,9 @@ from .fused_add_dropout_scale import (
     get_bias_dropout_add_scale, 
     modulate_fused,
 )
+
+#Z: Added this
+from timm.models.vision_transformer import Attention
 
 
 def modulate(x, shift, scale):
@@ -141,6 +144,9 @@ class DDiTBlock(nn.Module):
         self.adaLN_modulation.weight.data.zero_()
         self.adaLN_modulation.bias.data.zero_()
 
+        #added this. Their DDitBlock is a modification of https://github.com/facebookresearch/DiT/blob/main/models.py
+        self.attn = Attention(dim, n_heads, qkv_bias=True)
+
 
     def _get_bias_dropout_scale(self):
         return (
@@ -169,18 +175,42 @@ class DDiTBlock(nn.Module):
             qkv = rotary.apply_rotary_pos_emb(
                 qkv, cos.to(qkv.dtype), sin.to(qkv.dtype)
             )
-        qkv = rearrange(qkv, 'b s ... -> (b s) ...')
-        if seqlens is None:
-            cu_seqlens = torch.arange(
-                0, (batch_size + 1) * seq_len, step=seq_len,
-                dtype=torch.int32, device=qkv.device
-            )
-        else:
-            cu_seqlens = seqlens.cumsum(-1)
-        x = flash_attn_varlen_qkvpacked_func(
-            qkv, cu_seqlens, seq_len, 0., causal=False)
         
-        x = rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)
+        #qkv = rearrange(qkv, 'b s ... -> (b s) ...')
+        #if seqlens is None:
+        #    cu_seqlens = torch.arange(
+        #        0, (batch_size + 1) * seq_len, step=seq_len,
+        #        dtype=torch.int32, device=qkv.device
+        #    )
+        #else:
+        #    cu_seqlens = seqlens.cumsum(-1)
+
+        #x = flash_attn_varlen_qkvpacked_func(
+        #    qkv, cu_seqlens, seq_len, 0., causal=False)
+        
+        #x = rearrange(x, '(b s) h d -> b s (h d)', b=batch_size)
+
+        # Z: I replaced the above with the below because I think flash attention was the thing which is picky about what GPU you use 
+        
+        # Separate Q, K, V (b, s, h, d_head)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+
+        # Rearrange for timm Attention (b, seq_len, dim)
+        q = rearrange(q, 'b s h d -> b s (h d)')
+        k = rearrange(k, 'b s h d -> b s (h d)')
+        v = rearrange(v, 'b s h d -> b s (h d)')
+
+        # Create Attention Mask for Variable-Length Sequences
+        if seqlens is not None:
+            attn_mask = torch.ones(batch_size, seq_len, seq_len, device=x.device) * float('-inf')
+            for i in range(batch_size):
+                valid_len = seqlens[i]
+                attn_mask[i, :valid_len, :valid_len] = 0  # Allow valid positions only
+        else:
+            attn_mask = None
+
+        # Apply Attention
+        x = self.attn(q, k, v, attn_mask=attn_mask)
 
         x = bias_dropout_scale_fn(self.attn_out(x), None, gate_msa, x_skip, self.dropout)
 

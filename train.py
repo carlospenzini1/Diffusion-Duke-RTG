@@ -41,8 +41,15 @@ def main(cfg):
         logger.info(f"Run id: {hydra_cfg.job.id}")
 
     try:
-        mp.set_start_method("forkserver")
-        mp.spawn(run_train.run_multiprocess, args=(ngpus, cfg, port), nprocs=ngpus, join=True)
+        #mp.set_start_method("forkserver")
+        #mp.spawn(run_train.run_multiprocess, args=(ngpus, cfg, port), nprocs=ngpus, join=True)
+
+        # Windows fix: Use "spawn" instead of "forkserver"
+        #mp.set_start_method("spawn", force=True)
+        # Convert cfg to a dictionary if it's not picklable
+        #cfg_dict = OmegaConf.to_container(cfg, resolve=True, enum_to_str=True)
+        #mp.spawn(run_train.run_multiprocess, args=(ngpus, cfg_dict, port), nprocs=ngpus, join=True)
+        run_train._run(0,1, cfg)
     except Exception as e:
         logger.critical(e, exc_info=True)
 
