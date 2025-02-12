@@ -35,18 +35,18 @@ def rotate_half(x):
     )
 
 
-@torch.jit.script
+#@torch.jit.script Zack: I commented this out because it was breaking things
 def _apply_rotary_pos_emb_torchscript(qkv, cos, sin):
     return (qkv * cos) + (rotate_half(qkv) * sin)
 
 
 def apply_rotary_pos_emb(qkv, cos, sin):
-    try:
-        import flash_attn.layers.rotary
-        cos = cos[0,:,0,0,:cos.shape[-1]//2]
-        sin = sin[0,:,0,0,:sin.shape[-1]//2]
-        return flash_attn.layers.rotary.apply_rotary_emb_qkv_(
-            qkv, cos, sin
-        )
-    except:
-        return _apply_rotary_pos_emb_torchscript(qkv, cos, sin)
+    #try:
+    #    import flash_attn.layers.rotary
+    #    cos = cos[0,:,0,0,:cos.shape[-1]//2]
+    #    sin = sin[0,:,0,0,:sin.shape[-1]//2]
+    #    return flash_attn.layers.rotary.apply_rotary_emb_qkv_(
+    #        qkv, cos, sin
+    #    )
+    #except:
+    return _apply_rotary_pos_emb_torchscript(qkv, cos, sin)

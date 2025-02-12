@@ -19,7 +19,7 @@ from .fused_add_dropout_scale import (
 )
 
 #Z: Added this
-from timm.models.vision_transformer import Attention
+#from timm.models.vision_transformer import Attention
 
 
 def modulate(x, shift, scale):
@@ -144,9 +144,6 @@ class DDiTBlock(nn.Module):
         self.adaLN_modulation.weight.data.zero_()
         self.adaLN_modulation.bias.data.zero_()
 
-        #added this. Their DDitBlock is a modification of https://github.com/facebookresearch/DiT/blob/main/models.py
-        self.attn = Attention(dim, n_heads, qkv_bias=True)
-
 
     def _get_bias_dropout_scale(self):
         return (
@@ -195,10 +192,6 @@ class DDiTBlock(nn.Module):
         # Separate Q, K, V (b, s, h, d_head)
         q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
 
-        # Rearrange for timm Attention (b, seq_len, dim)
-        q = rearrange(q, 'b s h d -> b s (h d)')
-        k = rearrange(k, 'b s h d -> b s (h d)')
-        v = rearrange(v, 'b s h d -> b s (h d)')
 
         # Create Attention Mask for Variable-Length Sequences
         if seqlens is not None:
@@ -207,10 +200,14 @@ class DDiTBlock(nn.Module):
                 valid_len = seqlens[i]
                 attn_mask[i, :valid_len, :valid_len] = 0  # Allow valid positions only
         else:
-            attn_mask = None
+            attn_mask = None #not sure about this
 
         # Apply Attention
-        x = self.attn(q, k, v, attn_mask=attn_mask)
+        x = F.scaled_dot_product_attention(
+                q, k, v,attn_mask=attn_mask
+            )
+        
+        x = rearrange(x, 'b s h d -> b s (h d)', b=batch_size)
 
         x = bias_dropout_scale_fn(self.attn_out(x), None, gate_msa, x_skip, self.dropout)
 
