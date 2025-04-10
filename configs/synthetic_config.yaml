@@ -1,0 +1,55 @@
+defaults:
+  - _self_
+  - model: tiny
+  - override hydra/launcher: submitit_slurm
+
+ngpus: 1
+tokens: 2
+
+training:
+  batch_size: 128
+  accum: 1
+  n_iters: 300000
+  snapshot_freq: 10000
+  log_freq: 50
+  eval_freq: 2000
+  snapshot_freq_for_preemption: 10000
+  weight: standard
+  snapshot_sampling: True
+  ema: 0.9999
+
+data:
+  train: data/synthetic/checkerboard
+  valid: data/synthetic/checkerboard
+  cache_dir: data
+
+graph:
+  type: uniform
+  file: data
+  report_all: False
+
+noise:
+  type: loglinear
+  sigma_min: 1e-4
+  sigma_max: 20
+
+sampling:
+  predictor: euler
+  steps: 400
+  noise_removal: True
+
+optim:
+  weight_decay: 1e-6
+  optimizer: AdamW
+  lr: 1e-4
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+  warmup: 2500
+  grad_clip: 1.
+
+int_scale: 5461.760975376213
+
+eval_rounds: 10
+
+plot_samples: 4096

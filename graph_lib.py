@@ -265,3 +265,64 @@ class Absorbing(Graph):
         entropy[rel_ind] += pos_term - neg_term + const
         return entropy
     
+class Mixed(Graph):
+    def __init__(self, dim,beta,lam):
+        super().__init__()
+        self._dim = dim
+        self.beta=beta 
+        self.lam=lam
+
+    @property
+    def dim(self):
+        return self._dim + 1
+    
+    @property
+    def absorb(self):
+        return False
+
+    def sample_transition(self, i, sigma):
+        mask_chance = 1 - (-self.beta*sigma).exp()
+        mask_indices = torch.rand(*i.shape, device=i.device) < mask_chance
+        i_pert = torch.where(mask_indices, self.dim - 1, i)
+        flip_chance=1 - (-self.lam*sigma).exp()
+        flip_indices=torch.rand(*i.shape, device=i.device) < flip_chance
+        i_pert = torch.where((flip_indices)& (~mask_indices), torch.randint_like(i, self._dim), i)
+        return i_pert
+    
+    def score_entropy(self, Mbartheta, sigma, x, x0):
+        mask_ind = x == self.dim - 1 #masked indices
+        flip_ind = (x!=x0)&(x!=self.dim-1) #flipped indices
+        esigm1a = torch.where(
+            self.lam*sigma < 0.5,
+            torch.expm1(self.lam*sigma),
+            torch.exp(self.lam*sigma) - 1
+        ) #a more stable way of computing exp(lambda*barsigma)-1 = a-1
+        esigm1b = torch.where(
+            self.beta*sigma < 0.5,
+            torch.expm1(self.beta*sigma),
+            torch.exp(self.beta*sigma) - 1
+        ) #a more stable way of computing exp(beta*barsigma)-1 = b-1
+        lamtilde=(1-self._dim+self.dim/esigm1a) #lamtilde= exp(lambar)
+        masked_ratio = (self.beta*((esigm1b+1/esigm1b)*esigm1a)/self._dim).expand_as(x)[mask_ind] #f(t,N)*beta
+        flipped_ratio=self.lam.expand_as(x)[flip_ind] #lambda
+
+        # negative_term
+        neg_masked_term = -1*masked_ratio *Mbartheta[mask_ind].sum(dim=-1) #-f(t,N)*beta*log(M_\theta) for masked terms
+        neg_flipped_term = -1*flipped_ratio * Mbartheta[flip_ind].sum(dim=-1) #-lambda*log(M_\theta) for flipped terms
+        #still needs to be multiplied by tildelambda or 1/tildelambda appropriately for each term in the sum!! also, don't sum over [x_t]_i??
+
+        #positive term
+        pos_masked_term = Mbartheta[mask_ind].exp().sum(dim=-1) #M_theta = exp(barM_theta)
+        pos_flipped_term = Mbartheta[flip_ind].exp().sum(dim=-1)
+
+        # constant term
+        masked_const = 0
+        flipped_const =0
+        # this will be tildelambda log(tildelambda)-tildelambda (or 1/tildelambda instead of tildelambda as appropriate) 
+        # times lambda or f(t,N) as appropriate
+
+        entropy = torch.zeros(*x.shape, device=x.device)
+        entropy[mask_ind] += pos_masked_term - neg_masked_term + masked_const 
+        entropy[flip_ind]+= pos_flipped_term-neg_flipped_term+flipped_const
+        #sum over i and multiplication by sigma(t) happens after!! see loss_fn in losses.py
+        return entropy

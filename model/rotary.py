@@ -37,6 +37,7 @@ def rotate_half(x):
 
 #@torch.jit.script Zack: I commented this out because it was breaking things
 def _apply_rotary_pos_emb_torchscript(qkv, cos, sin):
+    
     return (qkv * cos) + (rotate_half(qkv) * sin)
 
 
