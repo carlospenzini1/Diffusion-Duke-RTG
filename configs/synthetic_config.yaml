@@ -11,7 +11,7 @@ training:
   accum: 1
   n_iters: 300000
   snapshot_freq: 10000
-  log_freq: 50
+  log_freq: 1000
   eval_freq: 2000
   snapshot_freq_for_preemption: 10000
   weight: standard
@@ -46,10 +46,10 @@ optim:
   beta2: 0.999
   eps: 1e-8
   warmup: 2500
-  grad_clip: 1.
+  grad_clip: 5.
 
 int_scale: 5461.760975376213
 
-eval_rounds: 10
+eval_rounds: 1
 
-plot_samples: 4096
+plot_samples: 1024
