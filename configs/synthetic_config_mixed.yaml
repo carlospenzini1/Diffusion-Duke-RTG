@@ -5,6 +5,8 @@ defaults:
 
 ngpus: 1
 tokens: 2
+lam: .2
+beta: 1.0
 
 training:
   batch_size: 128
@@ -24,7 +26,7 @@ data:
   cache_dir: data
 
 graph:
-  type: absorb
+  type: mixed
   file: data
   report_all: False
 

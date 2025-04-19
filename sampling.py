@@ -58,12 +58,12 @@ class Predictor(abc.ABC):
 
 @register_predictor(name="euler")
 class EulerPredictor(Predictor):
-    def update_fn(self, score_fn, x, t, step_size):
+    def update_fn(self, score_fn, x, t, step_size,generator=None):
         sigma, dsigma = self.noise(t)
         score = score_fn(x, sigma)
 
-        rev_rate = step_size * dsigma[..., None] * self.graph.reverse_rate(x, score)
-        x = self.graph.sample_rate(x, rev_rate)
+        rev_rate = step_size * dsigma[..., None] * self.graph.reverse_rate(x, score,sigma)
+        x = self.graph.sample_rate(x, rev_rate,generator=generator)
         return x
 
 @register_predictor(name="none")
@@ -91,21 +91,27 @@ class Denoiser:
         self.graph = graph
         self.noise = noise
 
-    def update_fn(self, score_fn, x, t):
-        sigma = self.noise(t)[0]
+    def update_fn(self, score_fn, x, t,step_size,generator=None):
+        sigma,dsigma = self.noise(t)
 
         score = score_fn(x, sigma)
-        stag_score = self.graph.staggered_score(score, sigma)
-        probs = stag_score * self.graph.transp_transition(x, sigma)
+        if self.graph.mixed:
+            rev_rate = step_size * dsigma[..., None] * self.graph.reverse_rate(x, score,sigma)
+            probs=F.one_hot(x, num_classes=self.graph.dim).to(rev_rate) + rev_rate
+        else:
+            #have not implemented these for mixed yet
+            stag_score = self.graph.staggered_score(score, sigma)
+            probs = stag_score * self.graph.transp_transition(x, sigma)
         # truncate probabilities
-        if self.graph.absorb:
+        if self.graph.absorb or self.graph.mixed:
             probs = probs[..., :-1]
         
+        
         #return probs.argmax(dim=-1)
-        return sample_categorical(probs)
+        return sample_categorical(probs,generator=generator)
                        
 
-def get_sampling_fn(config, graph, noise, batch_dims, eps, device):
+def get_sampling_fn(config, graph, noise, batch_dims, eps, device,generator=None):
     
     sampling_fn = get_pc_sampler(graph=graph,
                                  noise=noise,
@@ -114,12 +120,12 @@ def get_sampling_fn(config, graph, noise, batch_dims, eps, device):
                                  steps=config.sampling.steps,
                                  denoise=config.sampling.noise_removal,
                                  eps=eps,
-                                 device=device)
+                                 device=device,generator=generator)
     
     return sampling_fn
     
 
-def get_pc_sampler(graph, noise, batch_dims, predictor, steps, denoise=True, eps=1e-5, device=torch.device('cpu'), proj_fun=lambda x: x):
+def get_pc_sampler(graph, noise, batch_dims, predictor, steps, denoise=True, eps=1e-5, device=torch.device('cpu'), proj_fun=lambda x: x,generator=None):
     predictor = get_predictor(predictor)(graph, noise)
     projector = proj_fun
     denoiser = Denoiser(graph, noise)
@@ -134,14 +140,14 @@ def get_pc_sampler(graph, noise, batch_dims, predictor, steps, denoise=True, eps
         for i in range(steps):
             t = timesteps[i] * torch.ones(x.shape[0], 1, device=device)
             x = projector(x)
-            x = predictor.update_fn(sampling_score_fn, x, t, dt)
+            x = predictor.update_fn(sampling_score_fn, x, t, dt,generator=generator)
             
 
         if denoise:
             # denoising step
             x = projector(x)
             t = timesteps[-1] * torch.ones(x.shape[0], 1, device=device)
-            x = denoiser.update_fn(sampling_score_fn, x, t)
+            x = denoiser.update_fn(sampling_score_fn, x, t,dt,generator=generator)
             
         return x
     

@@ -167,6 +167,7 @@ class DDiTBlock(nn.Module):
 
         qkv = self.attn_qkv(x)
         qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.n_heads)
+        #qprerot, kprerot, vprerot = qkv[:, :, 0].clone(), qkv[:, :, 1].clone(), qkv[:, :, 2].clone()
         with torch.cuda.amp.autocast(enabled=False):
             cos, sin = rotary_cos_sin
             qkv = rotary.apply_rotary_pos_emb(
@@ -189,8 +190,9 @@ class DDiTBlock(nn.Module):
 
         # Z: I replaced the above with the below because I think flash attention was the thing which is picky about what GPU you use 
         
-        # Separate Q, K, V (b, s, h, d_head)
-        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        # Separate Q, K, V Z: I think this was the issue!!
+        qkv = rearrange(qkv, 'b s three h d -> three b h s d', three=3, h=self.n_heads)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
 
         # Create Attention Mask for Variable-Length Sequences
@@ -198,16 +200,19 @@ class DDiTBlock(nn.Module):
             attn_mask = torch.ones(batch_size, seq_len, seq_len, device=x.device) * float('-inf')
             for i in range(batch_size):
                 valid_len = seqlens[i]
-                attn_mask[i, :valid_len, :valid_len] = 0  # Allow valid positions only
+                attn_mask[i, :valid_len, :valid_len] = 0
+            attn_mask = attn_mask.unsqueeze(1)  # shape: (b, 1, s, s)
         else:
             attn_mask = None #not sure about this
+            
 
         # Apply Attention
         x = F.scaled_dot_product_attention(
                 q, k, v,attn_mask=attn_mask
             )
         
-        x = rearrange(x, 'b s h d -> b s (h d)', b=batch_size)
+        x = rearrange(x, 'b h s d -> b s (h d)', b=batch_size)
+
 
         x = bias_dropout_scale_fn(self.attn_out(x), None, gate_msa, x_skip, self.dropout)
 

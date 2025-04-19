@@ -1,9 +1,9 @@
 name: tiny
 type: ddit
 hidden_size: 64
-cond_dim: 256
+cond_dim: 32
 length: 32
-n_blocks: 3
-n_heads: 4
+n_blocks: 1
+n_heads: 1
 scale_by_sigma: False
 dropout: 0.01

@@ -23,11 +23,9 @@ def get_loss_fn(noise, graph, train, sampling_eps=1e-3, lv=False):
         
         if perturbed_batch is None:
             perturbed_batch = graph.sample_transition(batch, sigma[:, None])
-
         log_score_fn = mutils.get_score_fn(model, train=train, sampling=False)
         log_score = log_score_fn(perturbed_batch, sigma)
         loss = graph.score_entropy(log_score, sigma[:, None], perturbed_batch, batch)
-
         loss = (dsigma[:, None] * loss).sum(dim=-1)
 
         return loss
@@ -90,8 +88,10 @@ def get_step_fn(noise, graph, train, optimize_fn, accum):
             optimizer = state['optimizer']
             scaler = state['scaler']
             loss = loss_fn(model, batch, cond=cond).mean() / accum
-            
-            scaler.scale(loss).backward()
+            if torch.isfinite(loss):
+                scaler.scale(loss).backward()
+            else:
+                print(f"Warning: Non-finite loss at step {state['step']}: {loss.item()}")
 
             accum_iter += 1
             total_loss += loss.detach()
@@ -107,10 +107,12 @@ def get_step_fn(noise, graph, train, optimize_fn, accum):
                 total_loss = 0
         else:
             with torch.no_grad():
+                print('Warning: Not taking backward passes')
                 ema = state['ema']
                 ema.store(model.parameters())
                 ema.copy_to(model.parameters())
-                loss = loss_fn(model, batch, cond=cond).mean()
+                loss_fn_pre_avg=loss_fn(model, batch, cond=cond)
+                loss = loss_fn_pre_avg.mean()
                 ema.restore(model.parameters())
 
         return loss

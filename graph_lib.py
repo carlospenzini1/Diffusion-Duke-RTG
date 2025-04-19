@@ -13,6 +13,8 @@ def get_graph(config, device):
         return Uniform(config.tokens)
     elif config.graph.type == "absorb":
         return Absorbing(config.tokens)
+    elif config.graph.type == "mixed":
+        return Mixed(config.tokens,config.lam,config.beta)
     else:
         raise ValueError(f"Graph {config.graph.type} not valid")
 
@@ -74,7 +76,7 @@ class Graph(abc.ABC):
         return sample_categorical(transition_vector, method="hard")
     
 
-    def reverse_rate(self, i, score):
+    def reverse_rate(self, i, score,sigma):
         """
         Constructs the reverse rate. Which is score * transp_rate
         """
@@ -84,8 +86,8 @@ class Graph(abc.ABC):
         normalized_rate.scatter_(-1, i[..., None], -normalized_rate.sum(dim=-1, keepdim=True))
         return normalized_rate
 
-    def sample_rate(self, i, rate):
-        return sample_categorical(F.one_hot(i, num_classes=self.dim).to(rate) + rate)
+    def sample_rate(self, i, rate,generator=None):
+        return sample_categorical(F.one_hot(i, num_classes=self.dim).to(rate) + rate,generator=generator)
 
     
     @abc.abstractmethod
@@ -279,6 +281,17 @@ class Mixed(Graph):
     @property
     def absorb(self):
         return False
+    
+    @property
+    def mixed(self):
+        return True
+    
+    def transition(self, i, sigma):
+        """
+        Computes the i-th column of the transition matrix e^{sigma Q}.
+        """
+        print('Need to implement this')
+        pass
 
     def sample_transition(self, i, sigma):
         mask_chance = 1 - (-self.beta*sigma).exp()
@@ -289,40 +302,164 @@ class Mixed(Graph):
         i_pert = torch.where((flip_indices)& (~mask_indices), torch.randint_like(i, self._dim), i)
         return i_pert
     
-    def score_entropy(self, Mbartheta, sigma, x, x0):
-        mask_ind = x == self.dim - 1 #masked indices
-        flip_ind = (x!=x0)&(x!=self.dim-1) #flipped indices
-        esigm1a = torch.where(
-            self.lam*sigma < 0.5,
-            torch.expm1(self.lam*sigma),
-            torch.exp(self.lam*sigma) - 1
-        ) #a more stable way of computing exp(lambda*barsigma)-1 = a-1
-        esigm1b = torch.where(
-            self.beta*sigma < 0.5,
-            torch.expm1(self.beta*sigma),
-            torch.exp(self.beta*sigma) - 1
-        ) #a more stable way of computing exp(beta*barsigma)-1 = b-1
-        lamtilde=(1-self._dim+self.dim/esigm1a) #lamtilde= exp(lambar)
-        masked_ratio = (self.beta*((esigm1b+1/esigm1b)*esigm1a)/self._dim).expand_as(x)[mask_ind] #f(t,N)*beta
-        flipped_ratio=self.lam.expand_as(x)[flip_ind] #lambda
+    def sample_limit(self, *batch_dims):
+        return (self.dim - 1) * torch.ones(*batch_dims, dtype=torch.int64)
+    
+    def rate(self,i):
+        edge = self.lam * torch.ones(*i.shape, self.dim, device=i.device)
+        edge[..., -1] = self.beta
+        edge = edge.scatter(-1, i[..., None], -self.lam * (self.dim - 2) - self.beta)
 
-        # negative_term
-        neg_masked_term = -1*masked_ratio *Mbartheta[mask_ind].sum(dim=-1) #-f(t,N)*beta*log(M_\theta) for masked terms
-        neg_flipped_term = -1*flipped_ratio * Mbartheta[flip_ind].sum(dim=-1) #-lambda*log(M_\theta) for flipped terms
-        #still needs to be multiplied by tildelambda or 1/tildelambda appropriately for each term in the sum!! also, don't sum over [x_t]_i??
+        mask = (i == self.dim-1)[..., None]  
+        edge = edge.masked_fill(mask, 0)
+        
+        return edge
 
-        #positive term
-        pos_masked_term = Mbartheta[mask_ind].exp().sum(dim=-1) #M_theta = exp(barM_theta)
-        pos_flipped_term = Mbartheta[flip_ind].exp().sum(dim=-1)
+    def transp_rate(self, i, f_t):
+        # i: (B, L), f_t: (B, 1)
+        B, L = i.shape
+        edge = self.lam * torch.ones(B, L, self.dim, device=i.device)
+        edge[..., -1] = 0
+        edge = edge.scatter(-1, i[..., None], -self.lam * (self.dim - 2) - self.beta)
 
-        # constant term
-        masked_const = 0
-        flipped_const =0
-        # this will be tildelambda log(tildelambda)-tildelambda (or 1/tildelambda instead of tildelambda as appropriate) 
-        # times lambda or f(t,N) as appropriate
+        # Mask where i == dim - 1
+        mask = (i == self.dim - 1)  # shape (B, L)
 
-        entropy = torch.zeros(*x.shape, device=x.device)
-        entropy[mask_ind] += pos_masked_term - neg_masked_term + masked_const 
-        entropy[flip_ind]+= pos_flipped_term-neg_flipped_term+flipped_const
-        #sum over i and multiplication by sigma(t) happens after!! see loss_fn in losses.py
-        return entropy
+        # Compute per-batch fill values
+        fill = (f_t * self.beta).view(B, 1, 1)  # shape (B, 1, 1), broadcastable to (B, L, dim)
+
+        # Use broadcasting to fill edge where mask is True
+        edge = torch.where(mask[..., None], fill.expand(-1, L, self.dim), edge)
+
+        return edge
+
+    
+    def reverse_rate(self, i, score,sigma):
+        """
+        Constructs the reverse rate. Which is score * transp_rate
+        """
+        N = self.dim - 1  # real tokens in [0..N-1], 'mask' is ID=N
+        lam = self.lam
+        beta=self.beta
+        a_t = torch.exp(-N * lam * sigma)    # (1-t)^(N*lam)
+        b_t = torch.exp(-beta * sigma)       # (1-t)^beta
+
+        # shape (B,) or scalar if B=1
+        denom_f = (1.0 - b_t)*N + 1e-12
+        f_t = (b_t*(1.0 - a_t))/denom_f
+
+        normalized_rate = self.transp_rate(i,f_t) * score
+
+        normalized_rate.scatter_(-1, i[..., None], torch.zeros_like(normalized_rate))
+        normalized_rate.scatter_(-1, i[..., None], -normalized_rate.sum(dim=-1, keepdim=True))
+        return normalized_rate
+    
+    def staggered_score(self, score, dsigma):
+        """
+        Computes p_{sigma - dsigma}(z) / p_{sigma}(x), which is approximated with
+        e^{-{dsigma} E} score
+        """
+        print('Need to implement this')
+        pass
+
+
+    def score_entropy(self,
+        Mbar,
+        bar_sigma,
+        x_t,        # (B, L) the noised sample in [0..N]  (N is mask)
+        x_data,     # (B, L) the original data in [0..N-1]
+        ):
+        r"""
+        Matching logic:
+        1) a(t) = (1-t)^(N*lam), b(t) = (1-t)^beta, sigma(t) = 1/(1-t)
+        2) f(t) = [b(t)*(1 - a(t))]/[(1 - b(t))*N], lamBar=log(1 + N*a/(1 - a))
+        3) For each token i in each batch:
+            - if x_t[i] == N => factor = f(t)*beta
+                toexp = lamBar if x_data[i]==y else 0
+            else => factor = lam
+                toexp = lamBar if x_data[i]==y
+                        -lamBar if x_data[i]==x_t[i]
+                        else 0
+            - skip y==x_t[i]
+            - sum ell(Mbar[y], toexp) where ell(x,y)= e^x - e^y + e^y*(y - x)
+        4) Multiply total sum by sigma(t), and average over B*L.
+        """
+
+        device = x_data.device
+        B, L = x_data.shape
+        N = self.dim - 1  # real tokens in [0..N-1], 'mask' is ID=N
+        lam = self.lam
+        beta=self.beta
+        # 1) a,b,sigma,f,lamBar
+        a_t = torch.exp(-N * lam * bar_sigma)    # (1-t)^(N*lam)
+        b_t = torch.exp(-beta * bar_sigma)       # (1-t)^beta
+
+        # shape (B,) or scalar if B=1
+        denom_f = (1.0 - b_t)*N + 1e-12
+        f_t = (b_t*(1.0 - a_t))/denom_f
+
+        denom_lb = (1.0 - a_t) + 1e-12
+        lamBar_t = torch.log(1.0 + (N*a_t)/denom_lb)
+
+        # 3) We sum over y in [0..N-1], skipping y=x_t if x_t < N
+        # build a grid of candidate y
+        candidates = torch.arange(N, device=device).view(1,1,N)  # shape (1,1,N)
+
+        # skip_mask= True if y==x_t => skip.
+        # If x_t==N => none of these are skipped, because y in [0..N-1], so y==N never matches
+        skip_mask = (candidates == x_t.unsqueeze(-1))  # shape (B,L,N)
+
+        # x_t_is_mask => shape (B,L), true if x_t==N
+        x_t_is_mask = (x_t == N)  # (B,L)
+        # define factor= f(t)*beta if mask else lam
+        # shape (B,L)
+        factor_2d = torch.where(x_t_is_mask, f_t*beta, lam*torch.ones_like(x_t, dtype=torch.float32))
+        # expand to (B,L,N)
+        factor_3d = factor_2d.unsqueeze(-1).expand(B, L, N)
+
+        # define toexp piecewise
+        #   if x_t==N => lamBar if x_data==y else 0
+        #   else => lamBar if x_data==y
+        #           -lamBar if x_data==x_t
+        #           else 0
+        x_data_eq_y  = (x_data.unsqueeze(-1) == candidates)   # (B,L,N)
+        x_data_eq_xt = (x_data == x_t).unsqueeze(-1)          # (B,L,1)
+
+        # We'll need lamBar broadcast to (B,L,N).
+        # lamBar_t is shape (B,). We'll expand to (B,1,1) => then expand to (B,L,N).
+        lamBar_expand = lamBar_t.view(-1,1,1).expand(B,L,N)
+
+        zero_3d = torch.zeros((B,L,N), dtype=torch.float32, device=device)
+
+        # if x_t==N => toexp= lamBar where x_data_eq_y else 0
+        # shape (B,L,N)
+        toexp_mask_case = torch.where(x_data_eq_y, lamBar_expand, zero_3d)
+
+        # if x_t!=N => toexp= lamBar where x_data_eq_y, -lamBar where x_data_eq_xt, else 0
+        # so first define a version that sets lamBar if x_data_eq_y else 0
+        toexp_temp = torch.where(x_data_eq_y, lamBar_expand, zero_3d)
+        # then we override where x_data_eq_xt is True => -lamBar
+        toexp_nonmask_case = torch.where(x_data_eq_xt, -lamBar_expand, toexp_temp)
+
+        # Now pick between mask or non-mask
+        x_t_is_mask_3d = x_t_is_mask.unsqueeze(-1)  # shape (B,L,1)
+        toexp = torch.where(x_t_is_mask_3d, toexp_mask_case, toexp_nonmask_case)
+
+        # 4) ell(Mbar[y], toexp):
+        #    ell(x,y)= e^x - e^y + e^y*(y - x)
+        Mbar_y   = Mbar[...,:N]         # shape (B,L,N), ignoring the last index (mask)
+        exp_Mbar = torch.exp(Mbar_y)    # shape (B,L,N)
+        exp_toexp= torch.exp(toexp)     # shape (B,L,N)
+        ell_val  = exp_Mbar - exp_toexp + exp_toexp*(toexp - Mbar_y)
+
+        # skip transitions where y=x_t
+        skip_flt = (~skip_mask).float()
+
+        # local sum => factor_3d * ell_val * skip_flt
+        local_sum = factor_3d * ell_val * skip_flt
+
+        # multiply sum_over_y by sigma(t) => need shape (B,L) for sigma
+        # sigma_t is shape (B,). expand to (B,L)
+        sum_over_y = local_sum.sum(dim=-1) 
+
+        return sum_over_y
