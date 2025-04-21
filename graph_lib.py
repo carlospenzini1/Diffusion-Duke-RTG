@@ -268,7 +268,7 @@ class Absorbing(Graph):
         return entropy
     
 class Mixed(Graph):
-    def __init__(self, dim,beta,lam):
+    def __init__(self, dim,lam,beta):
         super().__init__()
         self._dim = dim
         self.beta=beta 
@@ -319,7 +319,6 @@ class Mixed(Graph):
         # i: (B, L), f_t: (B, 1)
         B, L = i.shape
         edge = self.lam * torch.ones(B, L, self.dim, device=i.device)
-        edge[..., -1] = 0
         edge = edge.scatter(-1, i[..., None], -self.lam * (self.dim - 2) - self.beta)
 
         # Mask where i == dim - 1
@@ -330,6 +329,8 @@ class Mixed(Graph):
 
         # Use broadcasting to fill edge where mask is True
         edge = torch.where(mask[..., None], fill.expand(-1, L, self.dim), edge)
+        edge[..., -1] = 0
+        
 
         return edge
 
@@ -440,10 +441,9 @@ class Mixed(Graph):
         toexp_temp = torch.where(x_data_eq_y, lamBar_expand, zero_3d)
         # then we override where x_data_eq_xt is True => -lamBar
         toexp_nonmask_case = torch.where(x_data_eq_xt, -lamBar_expand, toexp_temp)
-
         # Now pick between mask or non-mask
         x_t_is_mask_3d = x_t_is_mask.unsqueeze(-1)  # shape (B,L,1)
-        toexp = torch.where(x_t_is_mask_3d, toexp_mask_case, toexp_nonmask_case)
+        toexp = torch.where(x_t_is_mask_3d, toexp_mask_case, toexp_nonmask_case) #(B,L,N)
 
         # 4) ell(Mbar[y], toexp):
         #    ell(x,y)= e^x - e^y + e^y*(y - x)
