@@ -486,6 +486,36 @@ class MixedNoFt(Graph):
         print('Need to implement this')
         pass
 
+    def transp_transition(self, i, sigma):
+        "e^{Delta sigma Q}(i,.)"
+        B, L = i.shape
+        if (sigma.shape[0]!=B) or (len(sigma.shape)!=2):
+                print('Sigma size mismatch!')
+        lam=self.lam
+        dim=self.dim
+        beta=self.beta
+        device = i.device
+        N = dim - 1  # real tokens in [0..N-1], 'mask' is ID=N
+
+        b=(-beta*sigma).exp()
+        a=(-N*lam*sigma).exp()
+        candidates = torch.arange(N+1, device=device).view(1,1,N+1)
+        i_equal = (candidates == i.unsqueeze(-1))
+
+        i_is_mask = (i == N)  # (B,L)
+        i_is_mask_3d = i_is_mask.unsqueeze(-1)
+        edge = b*(1-a)/N
+        edge=edge.unsqueeze(-1).expand(B,L,N+1)
+      
+        diag=edge+(b*a).unsqueeze(-1).expand(B,L,N+1)
+        edge=torch.where(i_equal,diag,edge)
+        edge[...,-1]=(1-b)
+        edge=torch.where(i_is_mask_3d,(1-b).unsqueeze(-1),edge)
+        edge=torch.where(i_is_mask_3d&i_equal,1,edge)
+
+        return edge
+
+
     def sample_transition(self, i, sigma):
         mask_chance = 1 - (-self.beta*sigma).exp()
         mask_indices = torch.rand(*i.shape, device=i.device) < mask_chance
@@ -530,8 +560,22 @@ class MixedNoFt(Graph):
         Computes p_{sigma - dsigma}(z) / p_{sigma}(x), which is approximated with
         e^{-{dsigma} E} score
         """
-        print('Need to implement this')
-        pass
+        B,L,_=score.shape
+        if (dsigma.shape[0]!=B) or (len(dsigma.shape)!=2):
+                print('Sigma size mismatch!')
+        lam=self.lam
+        dim=self.dim
+        beta=self.beta
+        
+        N = dim - 1  # real tokens in [0..N-1], 'mask' is ID=N
+
+        b_inv=(beta*dsigma).exp().unsqueeze(-1)
+        a_inv=(N*lam*dsigma).exp().unsqueeze(-1)
+        score=score.clone()
+        stag_score=a_inv*b_inv*score+b_inv*(1-a_inv)*torch.sum(score[...,:-1],-1).unsqueeze(-1)
+        stag_score[...,-1]=score[...,-1]+(1-b_inv.squeeze(-1))*torch.sum(score[...,:-1],-1)
+
+        return stag_score
 
 
     def score_entropy_backup(self,

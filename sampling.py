@@ -74,7 +74,7 @@ class NonePredictor(Predictor):
 
 @register_predictor(name="analytic")
 class AnalyticPredictor(Predictor):
-    def update_fn(self, score_fn, x, t, step_size):
+    def update_fn(self, score_fn, x, t, step_size,generator=None):
         curr_sigma = self.noise(t)[0]
         next_sigma = self.noise(t - step_size)[0]
         dsigma = curr_sigma - next_sigma
@@ -83,7 +83,7 @@ class AnalyticPredictor(Predictor):
 
         stag_score = self.graph.staggered_score(score, dsigma)
         probs = stag_score * self.graph.transp_transition(x, dsigma)
-        return sample_categorical(probs)
+        return sample_categorical(probs,generator=generator)
 
     
 class Denoiser:
@@ -91,17 +91,19 @@ class Denoiser:
         self.graph = graph
         self.noise = noise
 
-    def update_fn(self, score_fn, x, t,step_size,generator=None):
+    def update_fn(self, score_fn, x, t,step_size,predictor_name,generator=None):
         sigma,dsigma = self.noise(t)
 
         score = score_fn(x, sigma)
-        if self.graph.mixed:
+        if predictor_name=='euler':
             rev_rate = step_size * dsigma[..., None] * self.graph.reverse_rate(x, score,sigma)
             probs=F.one_hot(x, num_classes=self.graph.dim).to(rev_rate) + rev_rate
-        else:
+        elif predictor_name=='analytic':
             #have not implemented these for mixed yet
             stag_score = self.graph.staggered_score(score, sigma)
             probs = stag_score * self.graph.transp_transition(x, sigma)
+        else:
+            print('Predictor Name not Valid')
         # truncate probabilities
         if self.graph.absorb or self.graph.mixed:
             probs = probs[..., :-1]
@@ -126,12 +128,13 @@ def get_sampling_fn(config, graph, noise, batch_dims, eps, device,generator=None
     
 
 def get_pc_sampler(graph, noise, batch_dims, predictor, steps, denoise=True, eps=1e-5, device=torch.device('cpu'), proj_fun=lambda x: x,generator=None):
-    predictor = get_predictor(predictor)(graph, noise)
+    predictor_name=predictor
+    predictor = get_predictor(predictor_name)(graph, noise)
     projector = proj_fun
     denoiser = Denoiser(graph, noise)
 
     @torch.no_grad()
-    def pc_sampler(model):
+    def pc_sampler(model,generator=None):
         sampling_score_fn = mutils.get_score_fn(model, train=False, sampling=True)
         x = graph.sample_limit(*batch_dims).to(device)
         timesteps = torch.linspace(1, eps, steps + 1, device=device)
@@ -147,7 +150,7 @@ def get_pc_sampler(graph, noise, batch_dims, predictor, steps, denoise=True, eps
             # denoising step
             x = projector(x)
             t = timesteps[-1] * torch.ones(x.shape[0], 1, device=device)
-            x = denoiser.update_fn(sampling_score_fn, x, t,dt,generator=generator)
+            x = denoiser.update_fn(sampling_score_fn, x, t,dt,predictor_name,generator=generator)
             
         return x
     
