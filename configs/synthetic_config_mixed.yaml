@@ -6,7 +6,7 @@ defaults:
 ngpus: 1
 tokens: 2
 lam: .2
-beta: 1.0
+beta: 1
 
 training:
   batch_size: 128
